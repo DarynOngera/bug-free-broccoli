@@ -16,6 +16,7 @@ COPY mix.exs ./
 RUN mix deps.get && mix deps.compile
 
 COPY poc_server.exs ./
+COPY poc.exs ./  
 
 EXPOSE 8080
 

