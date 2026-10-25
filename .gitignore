@@ -1,0 +1,12 @@
+# Mix / Erlang build artifacts
+_build/
+deps/
+erl_crash.dump
+*.beam
+mix.lock
+
+# Editor
+.elixir_ls/
+
+# Python
+__pycache__/

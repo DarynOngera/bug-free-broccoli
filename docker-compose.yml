@@ -1,0 +1,79 @@
+# cowlib 2.18.0 HPACK memory DoS — client/server lab with full observability.
+#
+#   - cowboy-server : Elixir + Cowboy 2.17.0 / cowlib 2.18.0 (vulnerable),
+#                     HTTP/2 over cleartext (h2c) on :8080, /metrics served
+#                     from the same listener.
+#   - exploit-client : Python raw-socket HTTP/2 client that replays the
+#                      HPACK oversized-integer attack.
+#   - prometheus     : scrapes /metrics every 2s.
+#   - grafana        : auto-provisioned dashboard of BEAM memory.
+#
+#   docker compose up -d --build
+#   docker compose run --rm exploit-client
+#   open http://localhost:3000  (admin/admin), dashboard is already there.
+#
+# To verify the fix: set cowlib 2.19.0 in server/mix.exs then
+#   docker compose build cowboy-server && docker compose up -d cowboy-server
+# and re-run the exploit client — the memory line stays flat.
+
+services:
+  cowboy-server:
+    build: ./server
+    container_name: cowboy-server
+    mem_limit: 1g
+    memswap_limit: 1g
+    ports:
+      - "8080:8080"            # HTTP/1.1 + HTTP/2 h2c, includes /metrics
+    networks:
+      - poc-net
+
+  exploit-client:
+    build: ./client
+    container_name: exploit-client
+    # Not started by `docker compose up -d` (that would attack on every boot).
+    # Run it explicitly with `docker compose run --rm exploit-client`.
+    profiles: ["attack"]
+    depends_on:
+      - cowboy-server
+    environment:
+      - SERVER_HOST=cowboy-server
+      - SERVER_PORT=8080
+      - PAYLOAD_CONTINUATIONS=524288   # 512KB bomb per connection (server cap allows 1MB)
+      - NUM_CONCURRENT=100             # async — easily handles hundreds
+      - SOCKET_TIMEOUT=15
+      - ATTACK_KEEPALIVE_SECS=60
+    networks:
+      - poc-net
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    depends_on:
+      - cowboy-server
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - poc-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - poc-net
+
+networks:
+  poc-net:
+    driver: bridge

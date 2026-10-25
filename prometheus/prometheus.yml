@@ -1,0 +1,11 @@
+# Scrape the Cowboy server's /metrics endpoint every 2 seconds so a
+# transient BEAM memory spike from the exploit is captured.
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: 'cowboy-server'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['cowboy-server:8080']
